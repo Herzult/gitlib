@@ -594,6 +594,7 @@ writeObjectToCache :: OdbS3Details
 writeObjectToCache dets sha typ len bytes = do
     debug $ "writeObjectToCache: " ++ show sha
     let path = tempDirectory dets </> fromText sha
+    createTree $ directory path
     B.writeFile (pathStr path) bytes
     now <- getCurrentTime
     modifyMVar_ (knownObjects dets) $
