@@ -290,14 +290,11 @@ lgMakeTree updates contents =
 --   tree is a no-op.
 lgNewTree :: Git.MonadGit m => LgRepository m (Tree m)
 lgNewTree = do
-    -- size <- liftIO $ newIORef 0
-
     (r,fptr) <- liftIO $ alloca $ \pptr -> do
-        r <- c'git_treebuilder_create pptr nullPtr
+        r       <- c'git_treebuilder_create pptr nullPtr
         builder <- peek pptr
-        fptr <- FC.newForeignPtr builder (c'git_treebuilder_free builder)
+        fptr    <- FC.newForeignPtr builder (c'git_treebuilder_free builder)
         return (r,fptr)
-
     if r < 0
         then failure (Git.TreeCreateFailed "Failed to create new tree builder")
         else lgMakeTree <$> liftIO (newIORef HashMap.empty)
@@ -308,23 +305,22 @@ lgLookupTree :: Git.MonadGit m => Int -> Tagged (Tree m) (Oid m)
 lgLookupTree len oid = do
     -- jww (2013-01-28): Verify the oid here
     (upds,fptr) <- lookupObject' (getOid (unTagged oid)) len
-          c'git_tree_lookup c'git_tree_lookup_prefix $
-          \_coid obj _ ->
+          c'git_tree_lookup c'git_tree_lookup_prefix $ \_coid obj _ ->
               withForeignPtr obj $ \objPtr -> do
-                  -- count <- c'git_tree_entrycount (castPtr objPtr)
-                  -- size <- newIORef 0
                   (r,fptr) <- alloca $ \pptr -> do
-                      r <- c'git_treebuilder_create pptr objPtr
+                      r       <- c'git_treebuilder_create pptr objPtr
                       builder <- peek pptr
-                      fptr <- FC.newForeignPtr builder
-                                  (c'git_treebuilder_free builder)
+                      fptr    <- FC.newForeignPtr builder
+                                     (c'git_treebuilder_free builder)
                       return (r,fptr)
                   if r < 0
                       then failure (Git.TreeCreateFailed
                                     "Failed to create tree builder")
                       else do
-                      upds <- liftIO $ newIORef HashMap.empty
-                      return (upds,fptr)
+                          cnt <- liftIO $ withForeignPtr fptr c'git_treebuilder_entrycount
+                          liftIO $ putStrLn $ "lgLookupTree 1: oid = " ++ show oid ++ ", cnt = " ++ show cnt
+                          upds <- liftIO $ newIORef HashMap.empty
+                          return (upds,fptr)
     return $ lgMakeTree upds fptr
 
 entryToTreeEntry :: Git.MonadGit m => Ptr C'git_tree_entry -> IO (TreeEntry m)
@@ -407,19 +403,28 @@ dropEntry builder key = do
 
 doWriteTree :: Git.MonadGit m => Tree m -> LgRepository m (Maybe (Oid m))
 doWriteTree t = do
+    liftIO $ putStrLn $ "doWriteTree 1.."
     repo <- lgGet
+    liftIO $ putStrLn $ "doWriteTree 2.."
     let tdata    = Git.getTreeData t
         contents = lgTreeContents tdata
 
+    liftIO $ putStrLn $ "doWriteTree 3.."
     upds <- liftIO $ readIORef (lgPendingUpdates tdata)
+    liftIO $ putStrLn $ "doWriteTree 4.."
     forM_ (HashMap.toList upds) $ \(k,v) -> do
+        liftIO $ putStrLn $ "doWriteTree 5.."
         oid <- doWriteTree v
+        liftIO $ putStrLn $ "doWriteTree 6: oid = " ++ show oid
         case oid of
             Nothing   -> dropEntry contents (T.unpack k)
             Just oid' -> insertEntry contents (T.unpack k) oid' 0o040000
+    liftIO $ putStrLn $ "doWriteTree 7.."
     liftIO $ writeIORef (lgPendingUpdates tdata) HashMap.empty
 
+    liftIO $ putStrLn $ "doWriteTree 8.."
     cnt <- liftIO $ withForeignPtr contents c'git_treebuilder_entrycount
+    liftIO $ putStrLn $ "doWriteTree 9: cnt = " ++ show cnt
     if cnt == 0
         then return Nothing
         else go contents (repoObj repo)
@@ -429,20 +434,31 @@ doWriteTree t = do
        -> ForeignPtr C'git_repository
        -> LgRepository m (Maybe (Oid m))
     go fptr repo = do
+        liftIO $ putStrLn $ "doWriteTree 10.."
         (r3,coid) <- liftIO $ do
+            liftIO $ putStrLn $ "doWriteTree 11.."
             coid <- mallocForeignPtr
+            liftIO $ putStrLn $ "doWriteTree 12.."
             withForeignPtr coid $ \coid' ->
                 withForeignPtr fptr $ \builder ->
                 withForeignPtr repo $ \repoPtr -> do
+                    liftIO $ putStrLn $ "doWriteTree 13.."
                     r3 <- c'git_treebuilder_write coid' repoPtr builder
+                    liftIO $ putStrLn $ "doWriteTree 14: r3 = " ++ show r3
                     return (r3,coid)
+        liftIO $ putStrLn $ "doWriteTree 15: r3 = " ++ show r3
         when (r3 < 0) $ do
+            liftIO $ putStrLn $ "doWriteTree 16.."
             errPtr <- liftIO $ c'giterr_last
+            liftIO $ putStrLn $ "doWriteTree 17.."
             err    <- liftIO $ peek errPtr
+            liftIO $ putStrLn $ "doWriteTree 18.."
             errStr <- liftIO $ peekCString (c'git_error'message err)
+            liftIO $ putStrLn $ "doWriteTree 19.."
             failure (Git.TreeBuilderWriteFailed $ T.pack $
                      "c'git_treebuilder_write failed with " ++ show r3
                      ++ ": " ++ errStr)
+        liftIO $ putStrLn $ "doWriteTree 20: coid = " ++ show coid
         return (Just (Oid coid))
 
 doModifyTree :: Git.MonadGit m
